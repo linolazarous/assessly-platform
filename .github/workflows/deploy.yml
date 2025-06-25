@@ -1,9 +1,11 @@
-# .github/workflows/deploy.yml
 name: Deploy to Firebase
 
 on:
   push:
     branches: [ main ]
+
+env:
+  REACT_APP_STRIPE_KEY: ${{ secrets.REACT_APP_STRIPE_KEY }}
 
 jobs:
   deploy:
@@ -12,8 +14,10 @@ jobs:
       - uses: actions/checkout@v3
       - run: npm install
       - run: npm run build
+      
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
-          repoToken: '${{ secrets.GITHUB_TOKEN }}'
-          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
-          projectId: your-project-id
+          repoToken: '${{ secrets.SONAR_TOKEN }}'  # Only needed if using SonarCloud
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'  # Required
+          projectId: your-project-id  # Replace with your actual Firebase project ID
+          channelId: live  # Optional: For preview channels
