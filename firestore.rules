@@ -1,0 +1,41 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Organization documents
+    match /organizations/{orgId} {
+      allow read: if request.auth != null && 
+                  request.auth.token.orgs.hasAny([orgId]);
+      allow write: if request.auth != null && 
+                   request.auth.token.orgs.get(orgId, '') == 'admin';
+      
+      // Assessments subcollection
+      match /assessments/{assessmentId} {
+        allow read: if request.auth != null && 
+                     request.auth.token.orgs.hasAny([orgId]);
+        allow create, update, delete: if request.auth != null && 
+                                      request.auth.token.orgs.get(orgId, '') in ['admin', 'assessor'];
+      }
+      
+      // Responses subcollection
+      match /responses/{responseId} {
+        allow read: if request.auth != null && 
+                     (request.auth.token.orgs.get(orgId, '') in ['admin', 'assessor'] ||
+                     resource.data.userId == request.auth.uid);
+        allow create: if request.auth != null && 
+                       request.auth.uid == request.resource.data.userId;
+      }
+    }
+    
+    // User documents
+    match /users/{userId} {
+      allow read, write: if request.auth != null && 
+                          request.auth.uid == userId;
+    }
+    
+    // Global assessments index
+    match /assessments/{assessmentId} {
+      allow read: if request.auth != null && 
+                   request.auth.token.orgs.hasAny([resource.data.orgId]);
+    }
+  }
+}
