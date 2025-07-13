@@ -1,6 +1,8 @@
-# Assessment Platform
+# Assessly SaaS Platform
 
-![Assessment Platform Logo] <!-- Add your logo here if available -->
+![Assessly Platform Logo](public/logo32.png)
+
+Measure Smarter, Not Harder – From Questions to Insights, Anywhere.
 
 A modern SaaS assessment platform designed for organizations, HR teams, educational institutions, and any entity requiring robust assessment solutions. Whether you need to conduct exams, field questionnaires, or performance evaluations, our platform provides the tools for seamless assessment creation, distribution, and analysis.
 
