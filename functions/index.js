@@ -2,194 +2,379 @@ const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const logger = require("firebase-functions/logger");
+const { HttpsError } = require("firebase-functions/v2/https");
 
-admin.initializeApp();
+// Initialize Firebase Admin with explicit configuration
+admin.initializeApp({
+  credential: admin.credential.applicationDefault(),
+  databaseURL: process.env.FIREBASE_DATABASE_URL
+});
+
 const db = admin.firestore();
-
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
+// Security rule: Ensure orgId matches user's organization
+const validateOrganizationAccess = async (orgId, userId) => {
+  if (!orgId || !userId) {
+    throw new HttpsError("permission-denied", "Organization ID and User ID are required");
+  }
+
+  const userDoc = await db.collection("users").doc(userId).get();
+  if (!userDoc.exists || !userDoc.data().organizations?.[orgId]) {
+    throw new HttpsError("permission-denied", "User does not have access to this organization");
+  }
+};
+
 /**
- * Creates a user document and a new organization when a user signs up.
- * Assigns a Stripe Customer ID and sets the initial "free" plan.
+ * Creates user document and organization on signup
  */
 exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
-  logger.info(`New user created: ${user.uid}`, { uid: user.uid });
+  try {
+    logger.info(`New user created: ${user.uid}`, { 
+      email: user.email, 
+      provider: user.providerData[0]?.providerId 
+    });
 
-  const stripeCustomer = await stripe.customers.create({
-    email: user.email,
-    name: user.displayName,
-    metadata: { firebaseUID: user.uid },
-  });
+    // Create Stripe customer
+    const stripeCustomer = await stripe.customers.create({
+      email: user.email,
+      name: user.displayName || user.email.split("@")[0],
+      metadata: { firebaseUID: user.uid }
+    });
 
-  const orgRef = db.collection("organizations").doc();
-  const userRef = db.collection("users").doc(user.uid);
+    // Create Firestore batch
+    const batch = db.batch();
+    const orgRef = db.collection("organizations").doc();
+    const userRef = db.collection("users").doc(user.uid);
 
-  const batch = db.batch();
+    // Organization data
+    batch.set(orgRef, {
+      name: `${user.displayName || user.email.split("@")[0]}'s Organization`,
+      ownerId: user.uid,
+      members: [user.uid],
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      stripeCustomerId: stripeCustomer.id,
+      subscription: {
+        plan: "free",
+        status: "active",
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      }
+    });
 
-  // Create organization for the new user
-  batch.set(orgRef, {
-    name: `${user.displayName || user.email.split("@")[0]}'s Organization`,
-    ownerId: user.uid,
-    members: [user.uid],
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    stripeCustomerId: stripeCustomer.id,
-    subscription: {
-      plan: "free",
-      status: "active",
-    },
-  });
+    // User profile data
+    batch.set(userRef, {
+      uid: user.uid,
+      email: user.email,
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+      emailVerified: user.emailVerified,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      organizations: {
+        [orgRef.id]: "admin"
+      }
+    });
 
-  // Create user profile
-  batch.set(userRef, {
-    email: user.email,
-    displayName: user.displayName,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    organizations: {
-      [orgRef.id]: "admin", // User is admin of their own new org
-    },
-  });
+    // Set custom claims
+    await admin.auth().setCustomUserClaims(user.uid, {
+      [`org_${orgRef.id}_role`]: "admin",
+      orgs: { [orgRef.id]: true }
+    });
 
-  // Set custom claims
-  await admin.auth().setCustomUserClaims(user.uid, {
-    roles: { [orgRef.id]: "admin" },
-  });
+    await batch.commit();
+    logger.info(`Successfully created user and organization`, { uid: user.uid, orgId: orgRef.id });
 
-  return batch.commit();
+  } catch (error) {
+    logger.error("User creation failed", { 
+      uid: user.uid, 
+      error: error.message,
+      stack: error.stack 
+    });
+    throw error;
+  }
 });
 
 /**
- * Creates a Stripe Checkout Session for a subscription.
+ * Creates Stripe Checkout Session
  */
 exports.createStripeCheckoutSession = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "You must be logged in.");
+    throw new HttpsError("unauthenticated", "Authentication required");
   }
 
   const { orgId, priceId, successUrl, cancelUrl } = data;
-  const orgDoc = await db.collection("organizations").doc(orgId).get();
-
-  if (!orgDoc.exists) {
-    throw new functions.https.HttpsError("not-found", "Organization not found.");
+  
+  // Validate input
+  if (!orgId || !priceId || !successUrl || !cancelUrl) {
+    throw new HttpsError("invalid-argument", "Missing required parameters");
   }
 
-  const customerId = orgDoc.data().stripeCustomerId;
-
   try {
+    await validateOrganizationAccess(orgId, context.auth.uid);
+
+    const orgDoc = await db.collection("organizations").doc(orgId).get();
+    if (!orgDoc.exists || !orgDoc.data().stripeCustomerId) {
+      throw new HttpsError("failed-precondition", "Organization not properly configured");
+    }
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       mode: "subscription",
-      customer: customerId,
+      customer: orgDoc.data().stripeCustomerId,
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: successUrl,
+      success_url: `${successUrl}?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: cancelUrl,
-      metadata: { orgId },
+      metadata: { 
+        orgId,
+        userId: context.auth.uid 
+      },
+      subscription_data: {
+        metadata: { orgId }
+      }
     });
 
-    return { url: session.url };
+    // Log session creation
+    await db.collection("billingLogs").doc(session.id).set({
+      orgId,
+      userId: context.auth.uid,
+      sessionId: session.id,
+      priceId,
+      status: "created",
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return { sessionId: session.id, url: session.url };
+
   } catch (error) {
-    logger.error("Stripe checkout session creation failed", { orgId, error: error.message });
-    throw new functions.https.HttpsError("internal", "Could not create Stripe session.");
+    logger.error("Checkout session creation failed", { 
+      orgId,
+      userId: context.auth?.uid,
+      error: error.message,
+      stack: error.stack 
+    });
+    throw new HttpsError("internal", "Failed to create checkout session");
   }
 });
 
 /**
- * Creates a Stripe Customer Portal session to manage billing.
+ * Creates Stripe Customer Portal session
  */
 exports.createStripePortalLink = functions.https.onCall(async (data, context) => {
-    if (!context.auth) {
-        throw new functions.https.HttpsError("unauthenticated", "Authentication required.");
-    }
+  if (!context.auth) {
+    throw new HttpsError("unauthenticated", "Authentication required");
+  }
 
-    const { orgId, returnUrl } = data;
+  const { orgId, returnUrl } = data;
+  
+  try {
+    await validateOrganizationAccess(orgId, context.auth.uid);
+
     const orgDoc = await db.collection("organizations").doc(orgId).get();
-
     if (!orgDoc.exists || !orgDoc.data().stripeCustomerId) {
-        throw new functions.https.HttpsError("failed-precondition", "No subscription found for this organization.");
+      throw new HttpsError("failed-precondition", "No subscription found");
     }
 
-    try {
-        const portalSession = await stripe.billingPortal.sessions.create({
-            customer: orgDoc.data().stripeCustomerId,
-            return_url: returnUrl,
-        });
+    const portalSession = await stripe.billingPortal.sessions.create({
+      customer: orgDoc.data().stripeCustomerId,
+      return_url: returnUrl,
+    });
 
-        return { url: portalSession.url };
-    } catch (error) {
-        logger.error("Stripe portal link creation failed", { orgId, error: error.message });
-        throw new functions.https.HttpsError("internal", "Could not create billing portal session.");
-    }
+    return { url: portalSession.url };
+
+  } catch (error) {
+    logger.error("Portal session creation failed", { 
+      orgId,
+      userId: context.auth?.uid,
+      error: error.message,
+      stack: error.stack 
+    });
+    throw new HttpsError("internal", "Failed to create portal session");
+  }
 });
 
-
 /**
- * Handles incoming webhooks from Stripe to update subscription status.
+ * Handles Stripe webhooks
  */
 exports.handleStripeWebhook = functions.https.onRequest(async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
 
   try {
-    event = stripe.webhooks.constructEvent(req.rawBody, sig, STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(
+      req.rawBody, 
+      sig, 
+      STRIPE_WEBHOOK_SECRET
+    );
   } catch (err) {
-    logger.error("Webhook signature verification failed.", { error: err.message });
+    logger.error("Webhook verification failed", { error: err.message });
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  const data = event.data.object;
-  logger.info(`Received Stripe webhook: ${event.type}`, data);
-  
-  const handler = webhookHandlers[event.type];
-  if (handler) {
-    try {
-      await handler(data);
-      res.json({ received: true });
-    } catch (err) {
-      logger.error(`Webhook handler for ${event.type} failed.`, { error: err.message });
-      res.status(500).json({ error: "Internal server error." });
-    }
-  } else {
-    logger.warn(`No handler for webhook event: ${event.type}`);
+  logger.info(`Processing Stripe event: ${event.type}`, { 
+    eventId: event.id,
+    type: event.type 
+  });
+
+  try {
+    await handleStripeEvent(event);
     res.json({ received: true });
+  } catch (err) {
+    logger.error("Webhook handler failed", { 
+      eventId: event.id,
+      error: err.message,
+      stack: err.stack 
+    });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-const webhookHandlers = {
-  'checkout.session.completed': async (session) => {
-    const orgId = session.metadata.orgId;
-    const subscription = await stripe.subscriptions.retrieve(session.subscription);
-    return updateSubscriptionStatus(orgId, subscription);
-  },
-  'customer.subscription.updated': async (subscription) => {
-    const customer = await stripe.customers.retrieve(subscription.customer);
-    const orgId = customer.metadata.orgId;
-    return updateSubscriptionStatus(orgId, subscription);
-  },
-  'customer.subscription.deleted': async (subscription) => {
-    const customer = await stripe.customers.retrieve(subscription.customer);
-    const orgId = customer.metadata.orgId;
-    return updateSubscriptionStatus(orgId, subscription);
+const handleStripeEvent = async (event) => {
+  const data = event.data.object;
+  
+  switch (event.type) {
+    case "checkout.session.completed":
+      await handleCheckoutSessionCompleted(data);
+      break;
+      
+    case "customer.subscription.updated":
+      await handleSubscriptionUpdated(data);
+      break;
+      
+    case "customer.subscription.deleted":
+      await handleSubscriptionDeleted(data);
+      break;
+      
+    case "invoice.payment_succeeded":
+      await handlePaymentSucceeded(data);
+      break;
+      
+    case "invoice.payment_failed":
+      await handlePaymentFailed(data);
+      break;
+      
+    default:
+      logger.debug(`Unhandled event type: ${event.type}`);
   }
 };
 
-const getPlanFromPriceId = (priceId) => {
-    const plans = {
-      [process.env.VITE_STRIPE_BASIC_PRICE_ID]: 'basic',
-      [process.env.VITE_STRIPE_PRO_PRICE_ID]: 'professional',
-      [process.env.VITE_STRIPE_ENTERPRISE_PRICE_ID]: 'enterprise',
-    };
-    return plans[priceId] || 'free';
+const handleCheckoutSessionCompleted = async (session) => {
+  const orgId = session.metadata.orgId;
+  const subscription = await stripe.subscriptions.retrieve(session.subscription);
+  
+  await updateSubscriptionStatus(orgId, subscription);
+  
+  // Update billing log
+  await db.collection("billingLogs").doc(session.id).update({
+    status: "completed",
+    subscriptionId: subscription.id,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
 };
 
-const updateSubscriptionStatus = (orgId, subscription) => {
+const handleSubscriptionUpdated = async (subscription) => {
+  const customer = await stripe.customers.retrieve(subscription.customer);
+  const orgId = customer.metadata.orgId;
+  await updateSubscriptionStatus(orgId, subscription);
+};
+
+const handleSubscriptionDeleted = async (subscription) => {
+  const customer = await stripe.customers.retrieve(subscription.customer);
+  const orgId = customer.metadata.orgId;
+  await updateSubscriptionStatus(orgId, subscription);
+};
+
+const handlePaymentSucceeded = async (invoice) => {
+  const customer = await stripe.customers.retrieve(invoice.customer);
+  const orgId = customer.metadata.orgId;
+  
+  await db.collection("billingInvoices").doc(invoice.id).set({
+    orgId,
+    amountPaid: invoice.amount_paid,
+    currency: invoice.currency,
+    invoicePdf: invoice.invoice_pdf,
+    hostedInvoiceUrl: invoice.hosted_invoice_url,
+    status: "paid",
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+};
+
+const handlePaymentFailed = async (invoice) => {
+  const customer = await stripe.customers.retrieve(invoice.customer);
+  const orgId = customer.metadata.orgId;
+  
+  await db.collection("billingInvoices").doc(invoice.id).set({
+    orgId,
+    amountDue: invoice.amount_due,
+    currency: invoice.currency,
+    attemptCount: invoice.attempt_count,
+    nextPaymentAttempt: invoice.next_payment_attempt 
+      ? admin.firestore.Timestamp.fromMillis(invoice.next_payment_attempt * 1000)
+      : null,
+    status: "payment_failed",
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+};
+
+const updateSubscriptionStatus = async (orgId, subscription) => {
   const priceId = subscription.items.data[0].price.id;
   const plan = getPlanFromPriceId(priceId);
-
+  
   const subData = {
-    plan: plan,
+    plan,
     status: subscription.status,
-    currentPeriodEnd: admin.firestore.Timestamp.fromMillis(subscription.current_period_end * 1000),
+    currentPeriodEnd: admin.firestore.Timestamp.fromMillis(
+      subscription.current_period_end * 1000
+    ),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
   };
-
-  return db.collection('organizations').doc(orgId).set({ subscription: subData }, { merge: true });
+  
+  await db.collection("organizations").doc(orgId).update({ 
+    subscription: subData 
+  });
+  
+  logger.info(`Updated subscription for org ${orgId}`, { 
+    plan, 
+    status: subscription.status 
+  });
 };
+
+const getPlanFromPriceId = (priceId) => {
+  const plans = {
+    [process.env.STRIPE_BASIC_PRICE_ID]: "basic",
+    [process.env.STRIPE_PRO_PRICE_ID]: "professional",
+    [process.env.STRIPE_ENTERPRISE_PRICE_ID]: "enterprise",
+  };
+  return plans[priceId] || "free";
+};
+
+// Scheduled function to check for expiring subscriptions
+exports.checkExpiringSubscriptions = functions.pubsub
+  .schedule("every 24 hours")
+  .timeZone("UTC")
+  .onRun(async (context) => {
+    const now = new Date();
+    const threshold = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
+    
+    const orgsSnapshot = await db.collection("organizations")
+      .where("subscription.currentPeriodEnd", "<=", admin.firestore.Timestamp.fromDate(threshold))
+      .where("subscription.status", "==", "active")
+      .get();
+    
+    for (const doc of orgsSnapshot.docs) {
+      const org = doc.data();
+      logger.info(`Sending renewal reminder to org ${doc.id}`);
+      
+      // In a real app, you would send an email here
+      await db.collection("notifications").add({
+        orgId: doc.id,
+        type: "subscription_renewal_reminder",
+        message: `Your subscription will renew on ${org.subscription.currentPeriodEnd.toDate().toLocaleDateString()}`,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        read: false
+      });
+    }
+    
+    logger.info(`Processed ${orgsSnapshot.size} expiring subscriptions`);
+  });
