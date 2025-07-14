@@ -1,7 +1,4 @@
-// src/components/QuestionnaireBuilder.js
-import { useState } from "react";
-import { collection, addDoc } from "firebase/firestore";
-import { db } from "../firebase";
+import React, { useState } from 'react';
 import { 
   Button, 
   TextField, 
@@ -13,178 +10,331 @@ import {
   List,
   ListItem,
   ListItemText,
-  Divider
-} from "@mui/material";
-import { Add, Delete } from "@mui/icons-material";
+  Divider,
+  Box,
+  Grid,
+  FormControl,
+  InputLabel,
+  Switch,
+  FormControlLabel,
+  CircularProgress
+} from '@mui/material';
+import { Add, Delete, Save } from '@mui/icons-material';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db, auth } from '../firebase';
+import { useSnackbar } from 'notistack';
+import { useNavigate } from 'react-router-dom';
+import PropTypes from 'prop-types';
 
 const QUESTION_TYPES = [
-  { value: "text", label: "Text Answer" },
-  { value: "multiple_choice", label: "Multiple Choice" },
-  { value: "rating", label: "Rating (1-5)" },
-  { value: "file", label: "File Upload" }
+  { value: 'text', label: 'Text Answer' },
+  { value: 'multiple_choice', label: 'Multiple Choice' },
+  { value: 'rating', label: 'Rating Scale' },
+  { value: 'file', label: 'File Upload' }
 ];
 
-export default function QuestionnaireBuilder() {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+export default function QuestionnaireBuilder({ organizationId }) {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [isTemplate, setIsTemplate] = useState(false);
   const [questions, setQuestions] = useState([
-    { text: "", type: "text", options: [] }
+    { text: '', type: 'text', options: [], required: true }
   ]);
+  const [loading, setLoading] = useState(false);
+  const { enqueueSnackbar } = useSnackbar();
+  const navigate = useNavigate();
 
   const addQuestion = () => {
-    setQuestions([...questions, { text: "", type: "text", options: [] }]);
+    if (questions.length >= 50) {
+      enqueueSnackbar('Maximum 50 questions allowed', { variant: 'warning' });
+      return;
+    }
+    setQuestions([...questions, { text: '', type: 'text', options: [], required: true }]);
   };
 
   const removeQuestion = (index) => {
-    const newQuestions = [...questions];
-    newQuestions.splice(index, 1);
-    setQuestions(newQuestions);
+    if (questions.length <= 1) {
+      enqueueSnackbar('Questionnaire must have at least one question', { variant: 'warning' });
+      return;
+    }
+    setQuestions(questions.filter((_, i) => i !== index));
   };
 
   const updateQuestion = (index, field, value) => {
     const newQuestions = [...questions];
     newQuestions[index][field] = value;
+    
+    if (field === 'type' && value !== 'multiple_choice') {
+      newQuestions[index].options = [];
+    }
+    
     setQuestions(newQuestions);
   };
 
   const addOption = (qIndex) => {
     const newQuestions = [...questions];
-    newQuestions[qIndex].options = [...newQuestions[qIndex].options, ""];
+    if (newQuestions[qIndex].options.length >= 10) {
+      enqueueSnackbar('Maximum 10 options per question', { variant: 'warning' });
+      return;
+    }
+    newQuestions[qIndex].options = [...newQuestions[qIndex].options, ''];
     setQuestions(newQuestions);
   };
 
-  const saveQuestionnaire = async () => {
+  const updateOption = (qIndex, oIndex, value) => {
+    const newQuestions = [...questions];
+    newQuestions[qIndex].options[oIndex] = value;
+    setQuestions(newQuestions);
+  };
+
+  const removeOption = (qIndex, oIndex) => {
+    const newQuestions = [...questions];
+    newQuestions[qIndex].options.splice(oIndex, 1);
+    setQuestions(newQuestions);
+  };
+
+  const validateQuestionnaire = () => {
+    if (!title.trim()) {
+      enqueueSnackbar('Title is required', { variant: 'error' });
+      return false;
+    }
+
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      if (!q.text.trim()) {
+        enqueueSnackbar(`Question ${i + 1} text is required`, { variant: 'error' });
+        return false;
+      }
+
+      if (q.type === 'multiple_choice' && q.options.length < 2) {
+        enqueueSnackbar(`Question ${i + 1} needs at least 2 options`, { variant: 'error' });
+        return false;
+      }
+
+      if (q.type === 'multiple_choice' && q.options.some(opt => !opt.trim())) {
+        enqueueSnackbar(`Question ${i + 1} has empty options`, { variant: 'error' });
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  const handleSave = async () => {
+    if (!validateQuestionnaire()) return;
+
+    setLoading(true);
     try {
-      await addDoc(collection(db, "questionnaires"), {
+      const collectionName = isTemplate ? 'questionnaireTemplates' : 'questionnaires';
+      await addDoc(collection(db, collectionName), {
         title,
         description,
         questions,
-        createdAt: new Date(),
-        createdBy: auth.currentUser.uid
+        isTemplate,
+        createdAt: serverTimestamp(),
+        createdBy: auth.currentUser.uid,
+        organizationId,
+        updatedAt: serverTimestamp()
       });
-      alert("Questionnaire saved successfully!");
+      
+      enqueueSnackbar(
+        `${isTemplate ? 'Template' : 'Questionnaire'} saved successfully!`, 
+        { variant: 'success' }
+      );
+      navigate(isTemplate ? '/templates' : '/questionnaires');
     } catch (err) {
-      alert(`Error saving questionnaire: ${err.message}`);
+      console.error('Save error:', err);
+      enqueueSnackbar(`Failed to save: ${err.message}`, { 
+        variant: 'error',
+        autoHideDuration: 5000
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <Paper elevation={3} style={{ padding: 24, margin: "16px 0" }}>
-      <Typography variant="h6" gutterBottom>
-        Create New Questionnaire
+    <Paper elevation={2} sx={{ p: 3, borderRadius: 2 }}>
+      <Typography variant="h5" gutterBottom fontWeight="bold">
+        {isTemplate ? 'Create Questionnaire Template' : 'Create New Questionnaire'}
       </Typography>
       
-      <TextField
-        label="Title"
-        fullWidth
-        margin="normal"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-      />
-      
-      <TextField
-        label="Description"
-        fullWidth
-        multiline
-        rows={3}
-        margin="normal"
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-      />
+      <Grid container spacing={3}>
+        <Grid item xs={12} md={8}>
+          <TextField
+            label="Title"
+            fullWidth
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+          />
+        </Grid>
+        
+        <Grid item xs={12} md={4}>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={isTemplate}
+                onChange={(e) => setIsTemplate(e.target.checked)}
+                color="primary"
+              />
+            }
+            label="Save as Template"
+          />
+        </Grid>
+        
+        <Grid item xs={12}>
+          <TextField
+            label="Description"
+            fullWidth
+            multiline
+            rows={3}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </Grid>
+      </Grid>
 
-      <Divider style={{ margin: "24px 0" }} />
+      <Divider sx={{ my: 3 }} />
 
-      <Typography variant="subtitle1" gutterBottom>
+      <Typography variant="h6" gutterBottom>
         Questions
       </Typography>
 
       <List>
-        {questions.map((q, qIndex) => (
-          <ListItem key={qIndex} divider>
-            <div style={{ width: "100%" }}>
-              <div style={{ display: "flex", alignItems: "center" }}>
-                <Typography variant="body1" style={{ marginRight: 16 }}>
-                  Q{qIndex + 1}
+        {questions.map((question, qIndex) => (
+          <ListItem 
+            key={`q-${qIndex}`} 
+            divider 
+            sx={{ 
+              p: 3,
+              mb: 2,
+              borderLeft: '4px solid',
+              borderColor: 'primary.main',
+              backgroundColor: 'background.paper'
+            }}
+          >
+            <Box sx={{ width: '100%' }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
+                <Typography variant="subtitle1" color="primary">
+                  Question {qIndex + 1}
                 </Typography>
                 <IconButton 
                   color="error" 
                   onClick={() => removeQuestion(qIndex)}
-                  size="small"
+                  disabled={questions.length <= 1}
                 >
-                  <Delete fontSize="small" />
+                  <Delete />
                 </IconButton>
-              </div>
+              </Box>
 
               <TextField
                 label="Question Text"
                 fullWidth
-                margin="normal"
-                value={q.text}
-                onChange={(e) => updateQuestion(qIndex, "text", e.target.value)}
+                value={question.text}
+                onChange={(e) => updateQuestion(qIndex, 'text', e.target.value)}
+                required
+                sx={{ mb: 2 }}
               />
 
-              <Select
-                value={q.type}
-                onChange={(e) => updateQuestion(qIndex, "type", e.target.value)}
-                fullWidth
-                margin="normal"
-              >
-                {QUESTION_TYPES.map((type) => (
-                  <MenuItem key={type.value} value={type.value}>
-                    {type.label}
-                  </MenuItem>
-                ))}
-              </Select>
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={6}>
+                  <FormControl fullWidth>
+                    <InputLabel>Question Type</InputLabel>
+                    <Select
+                      value={question.type}
+                      label="Question Type"
+                      onChange={(e) => updateQuestion(qIndex, 'type', e.target.value)}
+                    >
+                      {QUESTION_TYPES.map((type) => (
+                        <MenuItem key={type.value} value={type.value}>
+                          {type.label}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Grid>
 
-              {q.type === "multiple_choice" && (
-                <div style={{ marginTop: 16 }}>
-                  <Typography variant="caption">Options</Typography>
-                  {q.options.map((option, oIndex) => (
-                    <div key={oIndex} style={{ display: "flex", alignItems: "center" }}>
+                <Grid item xs={12} md={6}>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={question.required}
+                        onChange={(e) => updateQuestion(qIndex, 'required', e.target.checked)}
+                        color="primary"
+                      />
+                    }
+                    label="Required"
+                  />
+                </Grid>
+              </Grid>
+
+              {question.type === 'multiple_choice' && (
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Options
+                  </Typography>
+                  
+                  {question.options.map((option, oIndex) => (
+                    <Box key={`opt-${oIndex}`} sx={{ display: 'flex', gap: 1, mb: 1 }}>
                       <TextField
                         value={option}
-                        onChange={(e) => {
-                          const newQuestions = [...questions];
-                          newQuestions[qIndex].options[oIndex] = e.target.value;
-                          setQuestions(newQuestions);
-                        }}
+                        onChange={(e) => updateOption(qIndex, oIndex, e.target.value)}
                         fullWidth
-                        margin="dense"
+                        size="small"
+                        required
                       />
-                    </div>
+                      <IconButton
+                        color="error"
+                        onClick={() => removeOption(qIndex, oIndex)}
+                        disabled={question.options.length <= 2}
+                      >
+                        <Delete fontSize="small" />
+                      </IconButton>
+                    </Box>
                   ))}
-                  <Button 
-                    variant="outlined" 
-                    size="small" 
+                  
+                  <Button
+                    variant="outlined"
+                    size="small"
                     onClick={() => addOption(qIndex)}
                     startIcon={<Add />}
-                    style={{ marginTop: 8 }}
+                    disabled={question.options.length >= 10}
                   >
                     Add Option
                   </Button>
-                </div>
+                </Box>
               )}
-            </div>
+            </Box>
           </ListItem>
         ))}
       </List>
 
-      <Button
-        variant="outlined"
-        onClick={addQuestion}
-        startIcon={<Add />}
-        style={{ marginRight: 16 }}
-      >
-        Add Question
-      </Button>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
+        <Button
+          variant="contained"
+          onClick={addQuestion}
+          startIcon={<Add />}
+          disabled={questions.length >= 50}
+        >
+          Add Question
+        </Button>
 
-      <Button
-        variant="contained"
-        color="primary"
-        onClick={saveQuestionnaire}
-      >
-        Save Questionnaire
-      </Button>
+        <Button
+          variant="contained"
+          color="primary"
+          onClick={handleSave}
+          startIcon={loading ? <CircularProgress size={20} /> : <Save />}
+          disabled={loading}
+          sx={{ minWidth: 150 }}
+        >
+          {loading ? 'Saving...' : 'Save'}
+        </Button>
+      </Box>
     </Paper>
   );
 }
+
+QuestionnaireBuilder.propTypes = {
+  organizationId: PropTypes.string.isRequired
+};
