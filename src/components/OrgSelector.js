@@ -1,13 +1,24 @@
+import React from 'react';
 import { useCollection } from 'react-firebase-hooks/firestore';
 import { collection, query, where } from 'firebase/firestore';
+import { 
+  Select, 
+  MenuItem, 
+  FormControl, 
+  InputLabel, 
+  CircularProgress,
+  Skeleton,
+  Typography,
+  Box
+} from '@mui/material';
 import { db, auth } from '../../firebase';
-import { Select, MenuItem, FormControl, InputLabel } from '@mui/material';
+import PropTypes from 'prop-types';
 
-export default function OrgSelector({ currentOrg, setCurrentOrg }) {
-  const [orgsSnapshot, loading] = useCollection(
+export default function OrgSelector({ currentOrg, setCurrentOrg, size = 'medium' }) {
+  const [orgsSnapshot, loading, error] = useCollection(
     query(
       collection(db, 'organizations'),
-      where('members', 'array-contains', auth.currentUser.uid)
+      where('members', 'array-contains', auth.currentUser?.uid)
     )
   );
 
@@ -15,17 +26,45 @@ export default function OrgSelector({ currentOrg, setCurrentOrg }) {
     setCurrentOrg(event.target.value);
   };
 
-  if (loading) return <CircularProgress size={24} />;
+  if (error) {
+    console.error('Error loading organizations:', error);
+    return (
+      <Typography color="error">
+        Failed to load organizations
+      </Typography>
+    );
+  }
+
+  if (loading) {
+    return (
+      <Skeleton 
+        variant="rounded" 
+        width={size === 'small' ? 180 : 200} 
+        height={size === 'small' ? 40 : 56} 
+      />
+    );
+  }
+
+  if (!orgsSnapshot || orgsSnapshot.empty) {
+    return (
+      <Box sx={{ p: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          No organizations available
+        </Typography>
+      </Box>
+    );
+  }
 
   return (
-    <FormControl fullWidth size="small">
+    <FormControl fullWidth size={size}>
       <InputLabel>Organization</InputLabel>
       <Select
-        value={currentOrg}
+        value={currentOrg || ''}
         label="Organization"
         onChange={handleChange}
+        disabled={orgsSnapshot.size <= 1}
       >
-        {orgsSnapshot?.docs.map(doc => (
+        {orgsSnapshot.docs.map(doc => (
           <MenuItem key={doc.id} value={doc.id}>
             {doc.data().name}
           </MenuItem>
@@ -35,6 +74,8 @@ export default function OrgSelector({ currentOrg, setCurrentOrg }) {
   );
 }
 
-// Add empty state and loading skeleton
-if (loading) return <Skeleton variant="rounded" width={200} height={40} />;
-if (orgsSnapshot?.empty) return <Typography>No organizations found</Typography>;
+OrgSelector.propTypes = {
+  currentOrg: PropTypes.string,
+  setCurrentOrg: PropTypes.func.isRequired,
+  size: PropTypes.oneOf(['small', 'medium'])
+};
