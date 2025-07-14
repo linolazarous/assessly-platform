@@ -1,41 +1,138 @@
-import { jsPDF } from "jspdf";
+import React from 'react';
+import { jsPDF } from 'jspdf';
+import 'jspdf-autotable';
+import { Button, CircularProgress } from '@mui/material';
+import { PictureAsPdf } from '@mui/icons-material';
+import PropTypes from 'prop-types';
 
-function PdfReport({ assessment, answers }) {
-  const generatePdf = () => {
-    const doc = new jsPDF();
-    doc.text(`Assessment: ${assessment.title}`, 10, 10);
-    assessment.questions.forEach((q, i) => {
-      doc.text(`Q${i + 1}: ${q.text}`, 10, 20 + (i * 10));
-      doc.text(`Answer: ${answers[i] || "N/A"}`, 10, 25 + (i * 10));
-    });
-    doc.save("assessment_report.pdf");
+export default function PdfReport({ assessment, answers, responses }) {
+  const [generating, setGenerating] = React.useState(false);
+
+  const generatePdf = async () => {
+    setGenerating(true);
+    try {
+      const doc = new jsPDF();
+      
+      // Add logo
+      try {
+        const logoResponse = await fetch('/logo.png');
+        const logoBlob = await logoResponse.blob();
+        const logoUrl = URL.createObjectURL(logoBlob);
+        doc.addImage(logoUrl, 'PNG', 15, 10, 30, 10); // Adjusted size for better proportions
+      } catch (e) {
+        console.warn('Could not load logo:', e);
+      }
+
+      // Title section
+      doc.setFontSize(18);
+      doc.setTextColor(40, 53, 147);
+      doc.text(assessment.title, 105, 20, { align: 'center' });
+      
+      // Metadata
+      doc.setFontSize(10);
+      doc.setTextColor(100);
+      doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 15, 30);
+      
+      if (assessment.description) {
+        doc.setFontSize(12);
+        doc.setTextColor(60);
+        const splitDesc = doc.splitTextToSize(assessment.description, 180);
+        doc.text(splitDesc, 15, 40);
+      }
+      
+      // Questions table
+      const tableData = assessment.questions.map((q, i) => {
+        let answer = answers?.[i] || responses?.[i]?.answer || 'Not answered';
+        if (Array.isArray(answer)) answer = answer.join(', ');
+        return [
+          `Q${i+1}`,
+          q.text,
+          String(answer).substring(0, 100) // Truncate long answers
+        ];
+      });
+
+      doc.autoTable({
+        startY: 50,
+        head: [['#', 'Question', 'Answer']],
+        body: tableData,
+        theme: 'grid',
+        headStyles: {
+          fillColor: [40, 53, 147],
+          textColor: 255,
+          fontStyle: 'bold'
+        },
+        columnStyles: {
+          0: { cellWidth: 15 },
+          1: { cellWidth: 100 },
+          2: { cellWidth: 75 }
+        },
+        styles: {
+          fontSize: 10,
+          cellPadding: 3,
+          overflow: 'linebreak'
+        },
+        didDrawPage: (data) => {
+          // Footer on each page
+          doc.setFontSize(8);
+          doc.setTextColor(150);
+          doc.text(
+            `Page ${data.pageCount} of ${data.pageCount}`,
+            105,
+            doc.internal.pageSize.height - 10,
+            { align: 'center' }
+          );
+        }
+      });
+      
+      doc.save(`${assessment.title.replace(/[^a-z0-9]/gi, '_')}_report.pdf`);
+    } catch (error) {
+      console.error('PDF generation failed:', error);
+    } finally {
+      setGenerating(false);
+    }
   };
 
-  return <button onClick={generatePdf}>Download PDF Report</button>;
+  return (
+    <Button
+      variant="contained"
+      color="secondary"
+      onClick={generatePdf}
+      startIcon={generating ? <CircularProgress size={20} /> : <PictureAsPdf />}
+      disabled={generating}
+      size="small"
+      sx={{ minWidth: 180 }}
+    >
+      {generating ? 'Generating...' : 'Download PDF Report'}
+    </Button>
+  );
 }
 
-// Enhanced PDF generation with styling
-const generatePdf = () => {
-  const doc = new jsPDF();
-  
-  // Header
-  doc.setFontSize(18);
-  doc.text(assessment.title, 105, 20, { align: 'center' });
-  
-  // Questions
-  doc.setFontSize(12);
-  let yPosition = 40;
-  assessment.questions.forEach((q, i) => {
-    doc.text(`Q${i+1}: ${q.text}`, 15, yPosition);
-    doc.text(`Answer: ${answers[i] || 'N/A'}`, 15, yPosition + 7);
-    yPosition += 20;
-    
-    // Page break
-    if (yPosition > 250) {
-      doc.addPage();
-      yPosition = 20;
-    }
-  });
-  
-  doc.save(`${assessment.title}_report.pdf`);
+PdfReport.propTypes = {
+  assessment: PropTypes.shape({
+    title: PropTypes.string.isRequired,
+    description: PropTypes.string,
+    questions: PropTypes.arrayOf(PropTypes.shape({
+      text: PropTypes.string.isRequired,
+      type: PropTypes.string
+    })).isRequired
+  }).isRequired,
+  answers: PropTypes.object,
+  responses: PropTypes.arrayOf(PropTypes.shape({
+    answer: PropTypes.oneOfType([
+      PropTypes.string,
+      PropTypes.array,
+      PropTypes.number
+    ])
+  }))
 };
+
+
+// In ReportTemplate.js
+function ReportTemplate() {
+  return (
+    <div>
+      <div className="no-print"> {/* Print button */} </div>
+      <div> {/* Printable content */} </div>
+    </div>
+  )
+}
