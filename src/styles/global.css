@@ -1,0 +1,105 @@
+/* ============ Logo Styles ============ */
+/* Base logo styles */
+.logo {
+  display: inline-block;
+  transition: all 0.3s ease;
+  will-change: transform;
+}
+
+/* Logo animation */
+.logo-transition {
+  transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.logo-transition:hover {
+  transform: scale(1.05);
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+}
+
+/* Dark mode adjustments */
+@media (prefers-color-scheme: dark) {
+  .dark .logo,
+  .logo-dark {
+    filter: brightness(0) invert(1) drop-shadow(0 1px 1px rgba(255, 255, 255, 0.1));
+  }
+}
+
+/* Print styles */
+@media print {
+  .logo-print {
+    height: 40px !important;
+    width: auto !important;
+    filter: brightness(0) saturate(100%) !important;
+  }
+
+  /* Hide unnecessary elements in print */
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* ============ Global Enhancements ============ */
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Better focus styles for accessibility */
+:focus-visible {
+  outline: 2px solid var(--primary-color, #3f51b5);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Remove outline for mouse users */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ============ Animation Utilities ============ */
+.fade-in {
+  animation: fadeIn 0.3s ease-in forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ============ Responsive Helpers ============ */
+@media (max-width: 768px) {
+  .mobile-hidden {
+    display: none !important;
+  }
+}
+
+@media (min-width: 769px) {
+  .desktop-hidden {
+    display: none !important;
+  }
+}
+
+/* ============ Print Optimizations ============ */
+@media print {
+  * {
+    background: transparent !important;
+    color: #000 !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  a, a:visited {
+    text-decoration: underline;
+  }
+
+  a[href]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.8em;
+    font-weight: normal;
+  }
+
+  /* Don't show links that are fragment identifiers */
+  a[href^="#"]::after {
+    content: "";
+  }
+}
