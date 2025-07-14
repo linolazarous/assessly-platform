@@ -1,10 +1,84 @@
-// package.json
 {
+  "name": "assessment-platform",
+  "version": "1.0.0",
+  "private": true,
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "deploy": "npm run build && firebase deploy",
-    "deploy-functions": "cd functions && npm install && firebase deploy --only functions",
-    "deploy-rules": "firebase deploy --only firestore:rules"
+    "start": "vite",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint . --ext js,jsx,ts,tsx --fix",
+    "format": "prettier --write \"**/*.{js,jsx,ts,tsx,css,scss,json,md}\"",
+    "prepare": "husky install",
+    "deploy": "npm run build && firebase deploy --only hosting",
+    "deploy:prod": "npm run build && firebase deploy --only hosting -P production",
+    "deploy:functions": "npm --prefix functions run deploy",
+    "deploy:rules": "firebase deploy --only firestore:rules,storage",
+    "deploy:all": "npm run deploy && npm run deploy:functions && npm run deploy:rules",
+    "emulate": "firebase emulators:start --import=./emulator-data --export-on-exit",
+    "cypress:open": "cypress open",
+    "cypress:run": "cypress run"
+  },
+  "dependencies": {
+    "@mui/material": "^5.14.2",
+    "@mui/icons-material": "^5.14.2",
+    "@mui/x-data-grid": "^6.15.0",
+    "firebase": "^10.4.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.14.2",
+    "zustand": "^4.3.8",
+    "date-fns": "^2.30.0",
+    "notistack": "^3.0.0",
+    "jspdf": "^2.5.1",
+    "jspdf-autotable": "^3.5.28"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.15",
+    "@types/react-dom": "^18.2.7",
+    "@types/node": "^20.4.5",
+    "@vitejs/plugin-react": "^4.0.3",
+    "autoprefixer": "^10.4.14",
+    "cypress": "^12.17.3",
+    "eslint": "^8.45.0",
+    "eslint-config-prettier": "^8.8.0",
+    "eslint-plugin-import": "^2.27.5",
+    "eslint-plugin-jsx-a11y": "^6.7.1",
+    "eslint-plugin-react": "^7.32.2",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-security": "^1.7.1",
+    "husky": "^8.0.3",
+    "lint-staged": "^13.2.3",
+    "postcss": "^8.4.27",
+    "prettier": "^3.0.0",
+    "tailwindcss": "^3.3.3",
+    "typescript": "^5.1.6",
+    "vite": "^4.4.5",
+    "vite-plugin-pwa": "^0.16.4",
+    "vitest": "^0.33.0"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{css,scss,json,md}": [
+      "prettier --write"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
   }
 }
