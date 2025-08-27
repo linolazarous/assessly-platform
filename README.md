@@ -1,6 +1,6 @@
 # Assessly Platform
 
-![Assessly Platform Logo](public/logo32.png)
+![Assessly Platform Logo](logo32.png)
 
 > Measure Smarter, Not Harder â€“ From Questions to Insights, Anywhere.
 
@@ -30,3 +30,4 @@ graph TD
   B --> C[Collect Responses]
   C --> D[Generate Reports]
   D --> E[Analyze Insights]
+
